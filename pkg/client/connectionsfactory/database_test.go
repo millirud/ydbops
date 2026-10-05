@@ -14,7 +14,7 @@ var _ = Describe("Database metadata", func() {
 		func(database string, initialDatabase string, expectedDatabase []string) {
 			ctx := metadata.AppendToOutgoingContext(context.Background(), "x-ydb-auth-ticket", "token")
 			if initialDatabase != "" {
-				ctx = metadata.AppendToOutgoingContext(ctx, databaseHeader, initialDatabase)
+				ctx = metadata.AppendToOutgoingContext(ctx, DatabaseHeader, initialDatabase)
 			}
 
 			var got metadata.MD
@@ -31,7 +31,7 @@ var _ = Describe("Database metadata", func() {
 			}
 
 			Expect(databaseUnaryInterceptor(database)(ctx, "method", nil, nil, nil, invoker)).To(Succeed())
-			Expect(got.Get(databaseHeader)).To(Equal(expectedDatabase))
+			Expect(got.Get(DatabaseHeader)).To(Equal(expectedDatabase))
 			Expect(got.Get("x-ydb-auth-ticket")).To(Equal([]string{"token"}))
 		},
 		Entry("adds database", "/Root", "", []string{"/Root"}),

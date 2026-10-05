@@ -19,7 +19,7 @@ import (
 
 const (
 	BufferSize     = 32 << 20
-	databaseHeader = "x-ydb-database"
+	DatabaseHeader = "x-ydb-database"
 
 	// This gets added on top of OperationTimeout, so grpc call can terminate
 	// if any transport layer errors occur. Without this timeout, we wait forever
@@ -32,6 +32,7 @@ type Factory interface {
 	OperationParams() *Ydb_Operations.OperationParams
 	OperationTimeout() time.Duration
 	CallTimeout() time.Duration
+	Database() string
 }
 
 type Config struct {
@@ -76,6 +77,10 @@ func (f *connectionsFactory) CallTimeout() time.Duration {
 	return config.OperationTimeout + config.TransportTimeout
 }
 
+func (f *connectionsFactory) Database() string {
+	return f.configProvider().Database
+}
+
 func (f *connectionsFactory) Create() (*grpc.ClientConn, error) {
 	config := f.configProvider()
 
@@ -114,7 +119,7 @@ func databaseUnaryInterceptor(database string) grpc.UnaryClientInterceptor {
 		if database != "" {
 			md, _ := metadata.FromOutgoingContext(ctx)
 			md = md.Copy()
-			md.Set(databaseHeader, database)
+			md.Set(DatabaseHeader, database)
 			ctx = metadata.NewOutgoingContext(ctx, md)
 		}
 		return invoker(ctx, method, req, reply, cc, opts...)

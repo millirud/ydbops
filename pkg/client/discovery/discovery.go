@@ -22,7 +22,6 @@ type Discovery struct {
 	logger              *zap.SugaredLogger
 	connectionsFactory  connectionsfactory.Factory
 	credentialsProvider authprovider.Provider
-	database            string
 }
 
 type Client interface {
@@ -41,10 +40,6 @@ func NewDiscoveryClient(
 		connectionsFactory:  f,
 		credentialsProvider: cp,
 	}
-}
-
-func (c *Discovery) SetDatabase(database string) {
-	c.database = database
 }
 
 func (c *Discovery) ListEndpoints(database string) ([]*Ydb_Discovery.EndpointInfo, error) {
@@ -66,6 +61,7 @@ func (c *Discovery) WhoAmI() (string, error) {
 	result := Ydb_Discovery.WhoAmIResult{}
 	c.logger.Debug("Invoke WhoAmI method")
 	_, err := c.ExecuteDiscoveryMethod(&result, func(ctx context.Context, cl Ydb_Discovery_V1.DiscoveryServiceClient) (client.OperationResponse, error) {
+		ctx = c.withDatabaseHeader(ctx, c.connectionsFactory.Database())
 		return cl.WhoAmI(ctx, &Ydb_Discovery.WhoAmIRequest{IncludeGroups: false})
 	})
 	if err != nil {
@@ -73,6 +69,15 @@ func (c *Discovery) WhoAmI() (string, error) {
 	}
 	c.logger.Debugf("WhoAmI response: %s", result.User)
 	return result.User, nil
+}
+
+func (c *Discovery) withDatabaseHeader(ctx context.Context, database string) context.Context {
+	if database == "" {
+		c.logger.Warn("WhoAmI database is empty, x-ydb-database header is not set")
+		return ctx
+	}
+	c.logger.Debugf("WhoAmI set x-ydb-database header to %s", database)
+	return metadata.AppendToOutgoingContext(ctx, connectionsfactory.DatabaseHeader, database)
 }
 
 func (c *Discovery) ExecuteDiscoveryMethod(
@@ -89,10 +94,6 @@ func (c *Discovery) ExecuteDiscoveryMethod(
 
 	ctx, cancel := c.credentialsProvider.ContextWithAuth(context.TODO())
 	defer cancel()
-
-	if c.database != "" {
-		ctx = metadata.AppendToOutgoingContext(ctx, "x-ydb-database", c.database)
-	}
 
 	cl := Ydb_Discovery_V1.NewDiscoveryServiceClient(cc)
 	r, err := method(ctx, cl)
