@@ -9,6 +9,7 @@ import (
 	"github.com/ydb-platform/ydb-go-genproto/protos/Ydb_Discovery"
 	"github.com/ydb-platform/ydb-go-genproto/protos/Ydb_Operations"
 	"go.uber.org/zap"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/ydb-platform/ydbops/pkg/client"
@@ -21,6 +22,7 @@ type Discovery struct {
 	logger              *zap.SugaredLogger
 	connectionsFactory  connectionsfactory.Factory
 	credentialsProvider authprovider.Provider
+	database            string
 }
 
 type Client interface {
@@ -39,6 +41,10 @@ func NewDiscoveryClient(
 		connectionsFactory:  f,
 		credentialsProvider: cp,
 	}
+}
+
+func (c *Discovery) SetDatabase(database string) {
+	c.database = database
 }
 
 func (c *Discovery) ListEndpoints(database string) ([]*Ydb_Discovery.EndpointInfo, error) {
@@ -84,8 +90,9 @@ func (c *Discovery) ExecuteDiscoveryMethod(
 	ctx, cancel := c.credentialsProvider.ContextWithAuth(context.TODO())
 	defer cancel()
 
-	ctx, cancelTimeout := context.WithTimeout(ctx, c.connectionsFactory.CallTimeout())
-	defer cancelTimeout()
+	if c.database != "" {
+		ctx = metadata.AppendToOutgoingContext(ctx, "x-ydb-database", c.database)
+	}
 
 	cl := Ydb_Discovery_V1.NewDiscoveryServiceClient(cc)
 	r, err := method(ctx, cl)
