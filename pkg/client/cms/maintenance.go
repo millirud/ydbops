@@ -12,7 +12,8 @@ import (
 )
 
 const (
-	TaskUuidPrefix = "maintenance-"
+	TaskUuidPrefix       = "maintenance-"
+	DrainTaskDescription = "Rolling restart drain task"
 )
 
 type CreateTaskParams struct {
@@ -25,6 +26,7 @@ type Maintenance interface {
 	CompleteAction([]*Ydb_Maintenance.ActionUid) (*Ydb_Maintenance.ManageActionResult, error)
 	CompleteActions(string, []string) (*Ydb_Maintenance.ManageActionResult, error)
 	CreateMaintenanceTask(MaintenanceTaskParams) (MaintenanceTask, error)
+	CreateDrainTask(DrainTaskParams) (MaintenanceTask, error)
 	DropMaintenanceTask(string) (string, error)
 	DropTask(string) error
 	GetMaintenanceTask(string) (MaintenanceTask, error)

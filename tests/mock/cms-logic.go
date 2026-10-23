@@ -120,10 +120,21 @@ func whichStorageNodeIs(host string) uint32 {
 }
 
 func nodeIdFromAction(action *Action) uint32 {
-	nodeId := action.GetLockAction().Scope.GetNodeId()
+	if drain := action.GetDrainAction(); drain != nil {
+		return drain.GetScope().GetNodeId()
+	}
+
+	lock := action.GetLockAction()
+	if lock == nil || lock.Scope == nil {
+		return 0
+	}
+
+	nodeId := lock.Scope.GetNodeId()
 	if nodeId == 0 { // Scope is Host
-		host := action.GetLockAction().Scope.GetHost()
-		nodeId = whichStorageNodeIs(host)
+		host := lock.Scope.GetHost()
+		if host != "" {
+			nodeId = whichStorageNodeIs(host)
+		}
 	}
 
 	return nodeId
@@ -161,6 +172,18 @@ func (s *YdbMock) makeGroupStatesFor(taskOptions *MaintenanceTaskOptions, action
 				TaskUid:  taskOptions.TaskUid,
 				GroupId:  groupID,
 				ActionId: uuid.New().String(),
+			}
+
+			if action.GetDrainAction() != nil {
+				ags.ActionStates = append(ags.ActionStates, &ActionState{
+					Action:    action,
+					Status:    ActionState_ACTION_STATUS_IN_PROGRESS,
+					Reason:    ActionState_ACTION_REASON_UNSPECIFIED,
+					Details:   "Progress: 0%",
+					Deadline:  timestamppb.New(time.Now().Add(time.Minute * 3)),
+					ActionUid: s.actionToActionUID[action],
+				})
+				continue
 			}
 
 			ags.ActionStates = append(ags.ActionStates, s.givePerformedOrPendingStatus(taskOptions, action))
@@ -220,8 +243,46 @@ func (s *YdbMock) refreshStatesForTask(taskUID string) {
 	task := s.tasks[taskUID]
 	for _, ags := range task.actionGroupStates {
 		for _, as := range ags.ActionStates {
+			if as.Action.GetDrainAction() != nil {
+				continue
+			}
 			nodeID := nodeIdFromAction(as.Action)
 			as.Status = s.setPendingOrPerformed(nodeID, task.options.AvailabilityMode)
 		}
 	}
+}
+
+func (s *YdbMock) advanceDrainTask(task *fakeMaintenanceTask) {
+	if task == nil || !isDrainTask(task) {
+		return
+	}
+
+	task.drainGets++
+	status := ActionState_ACTION_STATUS_IN_PROGRESS
+	details := "Progress: 50%"
+	if task.drainGets >= 2 {
+		status = ActionState_ACTION_STATUS_PERFORMED
+		details = ""
+	}
+
+	for _, ags := range task.actionGroupStates {
+		for _, as := range ags.ActionStates {
+			if as.Action.GetDrainAction() == nil {
+				continue
+			}
+			as.Status = status
+			as.Details = details
+		}
+	}
+}
+
+func isDrainTask(task *fakeMaintenanceTask) bool {
+	for _, group := range task.actionGroups {
+		for _, action := range group.Actions {
+			if action.GetDrainAction() != nil {
+				return true
+			}
+		}
+	}
+	return false
 }

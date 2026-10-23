@@ -217,6 +217,51 @@ func actionGroupsFromHosts(params MaintenanceTaskParams) []*Ydb_Maintenance.Acti
 	return ags
 }
 
+func drainActionGroup(nodeID uint32) *Ydb_Maintenance.ActionGroup {
+	return &Ydb_Maintenance.ActionGroup{
+		Actions: []*Ydb_Maintenance.Action{
+			{
+				Action: &Ydb_Maintenance.Action_DrainAction{
+					DrainAction: &Ydb_Maintenance.DrainAction{
+						Scope: &Ydb_Maintenance.ActionScope{
+							Scope: &Ydb_Maintenance.ActionScope_NodeId{
+								NodeId: nodeID,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func (c *defaultCMSClient) CreateDrainTask(params DrainTaskParams) (MaintenanceTask, error) {
+	request := &Ydb_Maintenance.CreateMaintenanceTaskRequest{
+		OperationParams: c.connectionsFactory.OperationParams(),
+		TaskOptions: &Ydb_Maintenance.MaintenanceTaskOptions{
+			TaskUid:          params.TaskUID,
+			AvailabilityMode: params.AvailabilityMode,
+			Priority:         params.Priority,
+			Description:      DrainTaskDescription,
+		},
+		ActionGroups: []*Ydb_Maintenance.ActionGroup{
+			drainActionGroup(params.NodeID),
+		},
+	}
+
+	result := &Ydb_Maintenance.MaintenanceTaskResult{}
+	c.logger.Debug("Invoke CreateMaintenanceTask method for drain")
+	_, err := c.executeMaintenanceOperation(result,
+		func(ctx context.Context, cl Ydb_Maintenance_V1.MaintenanceServiceClient) (client.OperationResponse, error) {
+			return cl.CreateMaintenanceTask(ctx, request)
+		},
+	)
+	if err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
 func (c *defaultCMSClient) CreateMaintenanceTask(params MaintenanceTaskParams) (MaintenanceTask, error) {
 	request := &Ydb_Maintenance.CreateMaintenanceTaskRequest{
 		OperationParams: c.connectionsFactory.OperationParams(),

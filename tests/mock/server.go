@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/ydb-platform/ydb-go-genproto/Ydb_Auth_V1"
@@ -41,6 +42,7 @@ type fakeMaintenanceTask struct {
 	options           *MaintenanceTaskOptions
 	actionGroups      []*ActionGroup
 	actionGroupStates []*ActionGroupStates
+	drainGets         int
 }
 
 type AdditionalTestBehaviour struct {
@@ -83,6 +85,10 @@ type YdbMock struct {
 	// but are used for convenience in CMS logic.
 	isNodeCurrentlyReleased map[uint32]bool
 	actionToActionUID       map[*Action]*ActionUid
+
+	// mu serializes CMS handlers. Rolling restart drains nodes in parallel,
+	// and those handlers share tasks and RequestLog.
+	mu sync.Mutex
 }
 
 func makeSuccessfulOperation() *Ydb_Operations.Operation {
@@ -155,11 +161,15 @@ func (s *YdbMock) DropMaintenanceTask(ctx context.Context, req *DropMaintenanceT
 	// When we drop a task, some other tasks's actions can be turned into PERFORMED.
 	// We don't recalculate all actions states right now, we'll do it on demand, when the
 	// client comes for the particular task. For now, we only actualize our helper indexes:
-	for _, ag := range s.tasks[req.TaskUid].actionGroups {
-		for _, action := range ag.Actions {
-			delete(s.actionToActionUID, action)
-			actionNodeId := action.GetLockAction().Scope.GetNodeId()
-			s.isNodeCurrentlyReleased[actionNodeId] = false
+	task := s.tasks[req.TaskUid]
+	if task != nil {
+		for _, ag := range task.actionGroups {
+			for _, action := range ag.Actions {
+				delete(s.actionToActionUID, action)
+				if lock := action.GetLockAction(); lock != nil {
+					s.isNodeCurrentlyReleased[lock.Scope.GetNodeId()] = false
+				}
+			}
 		}
 	}
 	delete(s.tasks, req.TaskUid)
@@ -187,9 +197,12 @@ func (s *YdbMock) GetMaintenanceTask(
 ) (*GetMaintenanceTaskResponse, error) {
 	s.RequestLog = append(s.RequestLog, req)
 
+	task := s.tasks[req.TaskUid]
+	s.advanceDrainTask(task)
+
 	result := &GetMaintenanceTaskResult{
-		TaskOptions:       s.tasks[req.TaskUid].options,
-		ActionGroupStates: s.tasks[req.TaskUid].actionGroupStates,
+		TaskOptions:       task.options,
+		ActionGroupStates: task.actionGroupStates,
 	}
 
 	return &GetMaintenanceTaskResponse{Operation: wrapIntoOperation(result)}, nil
@@ -332,6 +345,9 @@ func (s *YdbMock) requireDatabase(
 	_ *grpc.UnaryServerInfo,
 	handler grpc.UnaryHandler,
 ) (any, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if s.requiredDatabase != "" {
 		values := metadata.ValueFromIncomingContext(ctx, "x-ydb-database")
 		if len(values) != 1 || values[0] != s.requiredDatabase {

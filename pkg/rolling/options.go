@@ -19,6 +19,10 @@ const (
 	DefaultNodesInflight           = 1
 	DefaultDelayBetweenRestarts    = time.Second
 	DefaultTenantsInflight         = 0
+	DefaultDrainWaitTimeout        = 15 * time.Minute
+
+	DrainWaitTimeoutActionFail = "fail"
+	DrainWaitTimeoutActionSkip = "skip"
 )
 
 type RestartOptions struct {
@@ -30,6 +34,9 @@ type RestartOptions struct {
 	DelayBetweenRestarts       time.Duration
 	SuppressCompatibilityCheck bool
 	CleanupOnExit              bool
+	WithDrain                  bool
+	DrainWaitTimeout           time.Duration
+	DrainWaitTimeoutAction     string
 
 	TenantsInflight int
 
@@ -62,6 +69,20 @@ func (o *RestartOptions) Validate() error {
 
 	if o.TenantsInflight < 0 {
 		return fmt.Errorf("specified invalid inflight tenants: %d. Must be positive", o.TenantsInflight)
+	}
+
+	if o.DrainWaitTimeoutAction != "" || o.DrainWaitTimeout != 0 || o.WithDrain {
+		if o.DrainWaitTimeout <= 0 {
+			return fmt.Errorf("specified invalid drain wait timeout: %s. Must be positive", o.DrainWaitTimeout)
+		}
+		switch o.DrainWaitTimeoutAction {
+		case DrainWaitTimeoutActionFail, DrainWaitTimeoutActionSkip:
+		default:
+			return fmt.Errorf(
+				"specified invalid drain wait timeout action: %q. Available choices: %s, %s",
+				o.DrainWaitTimeoutAction, DrainWaitTimeoutActionFail, DrainWaitTimeoutActionSkip,
+			)
+		}
 	}
 
 	o.SSHArgs = utils.ParseSSHArgs(rawSSHUnparsedArgs)

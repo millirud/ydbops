@@ -72,6 +72,26 @@ func MakeActionGroupsFromNodesIdsFixedDuration(duration time.Duration, nodeIDs .
 	return result
 }
 
+func MakeDrainActionGroup(nodeID uint32) []*Ydb_Maintenance.ActionGroup {
+	return []*Ydb_Maintenance.ActionGroup{
+		{
+			Actions: []*Ydb_Maintenance.Action{
+				{
+					Action: &Ydb_Maintenance.Action_DrainAction{
+						DrainAction: &Ydb_Maintenance.DrainAction{
+							Scope: &Ydb_Maintenance.ActionScope{
+								Scope: &Ydb_Maintenance.ActionScope_NodeId{
+									NodeId: nodeID,
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
 func MakeActionGroupsFromNodeIds(nodeIDs ...uint32) []*Ydb_Maintenance.ActionGroup {
 	return MakeActionGroupsFromNodeIdsWithInflight(1, nodeIDs...)
 }
