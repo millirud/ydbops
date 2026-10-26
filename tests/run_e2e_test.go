@@ -179,9 +179,6 @@ func RunTestCase(tc TestCase) {
 		expectedPlaceholders := make(map[string]int)
 		actualPlaceholders := make(map[string]int)
 
-		step.expectedRequests = normalizeDrainRequestOrder(step.expectedRequests)
-		actualRequests = normalizeDrainRequestOrder(actualRequests)
-
 		Expect(len(step.expectedRequests)).To(Equal(len(actualRequests)))
 
 		for i, expected := range step.expectedRequests {

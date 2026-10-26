@@ -25,13 +25,6 @@ type MaintenanceTaskParams struct {
 	Hosts []string
 }
 
-type DrainTaskParams struct {
-	TaskUID          string
-	AvailabilityMode Ydb_Maintenance.AvailabilityMode
-	Priority         int32
-	NodeID           uint32
-}
-
 type MaintenanceTask interface {
 	GetRetryAfter() *timestamppb.Timestamp
 	GetActionGroupStates() []*Ydb_Maintenance.ActionGroupStates

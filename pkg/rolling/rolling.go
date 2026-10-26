@@ -39,7 +39,6 @@ type Rolling struct {
 	// TODO jorres@: maybe turn this into a local `map`
 	// variable in `processActionGroupStates`
 	completedActions []*Ydb_Maintenance.ActionUid
-	drains           *drainTracker
 	mu               sync.RWMutex
 }
 
@@ -61,7 +60,6 @@ type state struct {
 
 const (
 	RestartTaskPrefix = "rolling-restart-"
-	DrainTaskPrefix   = "rolling-drain-"
 )
 
 type Executer interface {
@@ -99,7 +97,6 @@ func (e *executer) Execute() error {
 		logger:    e.logger,
 		opts:      e.opts,
 		restarter: e.restarter,
-		drains:    newDrainTracker(),
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -346,7 +343,6 @@ func (r *Rolling) handleRestartStatus(ctx context.Context, statuses <-chan resta
 			)
 
 			if retriesUntilNow+1 == r.opts.RestartRetryNumber {
-				r.releaseDrain(st.nodeID)
 				r.atomicRememberComplete(st.as.GetActionUid())
 				r.logger.Warnf("Failed to retry node %v specified number of times (%v)", st.nodeID, r.opts.RestartRetryNumber)
 			}
@@ -467,51 +463,22 @@ func (r *Rolling) dispatchActions(ctx context.Context, actions []*Ydb_Maintenanc
 }
 
 func (r *Rolling) dispatchAll(ctx context.Context, actions []*Ydb_Maintenance.ActionGroupStates, statusCh chan restartStatus) {
-	handler := r.startRestartHandler(ctx, statusCh)
+	handler := newRestartHandler(
+		ctx,
+		r.logger,
+		r.restarter,
+		r.opts.NodesInflight,
+		r.opts.DelayBetweenRestarts,
+		r.state.nodes,
+		statusCh,
+	)
+	handler.run()
 
 	for _, gs := range actions {
 		handler.push(gs)
 	}
 
 	handler.stop(true)
-}
-
-func (r *Rolling) startRestartHandler(ctx context.Context, statusCh chan restartStatus) *restartHandler {
-	handler := newRestartHandler(
-		ctx,
-		r.logger,
-		r.restarter,
-		r.cms,
-		r.opts.NodesInflight,
-		r.opts.DelayBetweenRestarts,
-		time.Duration(r.opts.CMSQueryInterval)*time.Second,
-		r.opts.GetAvailabilityMode(),
-		int32(r.opts.Priority),
-		r.opts.WithDrain,
-		r.state.nodes,
-		r.drains,
-		statusCh,
-	)
-	if r.opts.DrainWaitTimeout > 0 {
-		handler.drainTimeout = r.opts.DrainWaitTimeout
-	}
-	if r.opts.DrainWaitTimeoutAction != "" {
-		handler.drainTimeoutAction = r.opts.DrainWaitTimeoutAction
-	}
-	handler.run()
-	return handler
-}
-
-func (r *Rolling) releaseDrain(nodeID uint32) {
-	taskUID, ok := r.drains.forget(nodeID)
-	if !ok {
-		return
-	}
-
-	r.logger.Infof("Dropping drain task %s for node %d", taskUID, nodeID)
-	if _, err := r.cms.DropMaintenanceTask(taskUID); err != nil {
-		r.logger.Warnf("Failed to drop drain task %s for node %d: %v", taskUID, nodeID, err)
-	}
 }
 
 func (r *Rolling) dispatchByTenant(ctx context.Context, actions []*Ydb_Maintenance.ActionGroupStates, statusCh chan restartStatus) {
@@ -535,7 +502,16 @@ func (r *Rolling) dispatchByTenant(ctx context.Context, actions []*Ydb_Maintenan
 
 			r.logger.Infof("Starting a separate rolling instance for tenant %q (%d nodes)", tenant, len(actions))
 
-			handler := r.startRestartHandler(ctx, statusCh)
+			handler := newRestartHandler(
+				ctx,
+				r.logger,
+				r.restarter,
+				r.opts.NodesInflight,
+				r.opts.DelayBetweenRestarts,
+				r.state.nodes,
+				statusCh,
+			)
+			handler.run()
 
 			for _, gs := range actions {
 				handler.push(gs)
