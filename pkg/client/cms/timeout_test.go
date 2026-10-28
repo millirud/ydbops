@@ -81,6 +81,7 @@ var _ = Describe("CMS client deadline", func() {
 			_, err := client.CreateMaintenanceTask(cms.MaintenanceTaskParams{
 				TaskUID:   "deadline-test",
 				ScopeType: cms.NodeScope,
+				TaskType:  cms.LockTask,
 				Nodes:     []*Ydb_Maintenance.Node{{NodeId: 1}},
 			})
 			done <- callResult{err: err, elapsed: time.Since(start)}

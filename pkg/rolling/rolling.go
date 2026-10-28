@@ -201,6 +201,7 @@ func (r *Rolling) DoRestart(ctx context.Context) error {
 		Priority:         int32(r.opts.Priority),
 		Duration:         r.opts.GetRestartDuration(len(nodesToRestart)),
 		ScopeType:        cms.NodeScope,
+		TaskType:         cms.LockTask,
 		Nodes:            nodesToRestart,
 	}
 

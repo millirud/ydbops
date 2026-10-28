@@ -169,23 +169,38 @@ func (c *defaultCMSClient) GetMaintenanceTask(taskID string) (MaintenanceTask, e
 
 func wrapSingleScopeInActionGroup(
 	scope *Ydb_Maintenance.ActionScope,
+	taskType MaintenanceTaskType,
 	duration *durationpb.Duration,
-) *Ydb_Maintenance.ActionGroup {
-	return &Ydb_Maintenance.ActionGroup{
-		Actions: []*Ydb_Maintenance.Action{
-			{
-				Action: &Ydb_Maintenance.Action_LockAction{
-					LockAction: &Ydb_Maintenance.LockAction{
-						Scope:    scope,
-						Duration: duration,
-					},
+) (*Ydb_Maintenance.ActionGroup, error) {
+	var action *Ydb_Maintenance.Action
+	switch taskType {
+	case LockTask:
+		action = &Ydb_Maintenance.Action{
+			Action: &Ydb_Maintenance.Action_LockAction{
+				LockAction: &Ydb_Maintenance.LockAction{
+					Scope:    scope,
+					Duration: duration,
 				},
 			},
-		},
+		}
+	case DrainTask:
+		action = &Ydb_Maintenance.Action{
+			Action: &Ydb_Maintenance.Action_DrainAction{
+				DrainAction: &Ydb_Maintenance.DrainAction{
+					Scope: scope,
+				},
+			},
+		}
+	default:
+		return nil, invalidMaintenanceTaskType(taskType)
 	}
+
+	return &Ydb_Maintenance.ActionGroup{
+		Actions: []*Ydb_Maintenance.Action{action},
+	}, nil
 }
 
-func actionGroupsFromNodes(params MaintenanceTaskParams) []*Ydb_Maintenance.ActionGroup {
+func actionGroupsFromNodes(params MaintenanceTaskParams) ([]*Ydb_Maintenance.ActionGroup, error) {
 	ags := make([]*Ydb_Maintenance.ActionGroup, 0, len(params.Nodes))
 
 	for _, node := range params.Nodes {
@@ -195,13 +210,17 @@ func actionGroupsFromNodes(params MaintenanceTaskParams) []*Ydb_Maintenance.Acti
 			},
 		}
 
-		ags = append(ags, wrapSingleScopeInActionGroup(scope, params.Duration))
+		group, err := wrapSingleScopeInActionGroup(scope, params.TaskType, params.Duration)
+		if err != nil {
+			return nil, err
+		}
+		ags = append(ags, group)
 	}
 
-	return ags
+	return ags, nil
 }
 
-func actionGroupsFromHosts(params MaintenanceTaskParams) []*Ydb_Maintenance.ActionGroup {
+func actionGroupsFromHosts(params MaintenanceTaskParams) ([]*Ydb_Maintenance.ActionGroup, error) {
 	ags := make([]*Ydb_Maintenance.ActionGroup, 0, len(params.Hosts))
 
 	for _, hostFQDN := range params.Hosts {
@@ -211,13 +230,34 @@ func actionGroupsFromHosts(params MaintenanceTaskParams) []*Ydb_Maintenance.Acti
 			},
 		}
 
-		ags = append(ags, wrapSingleScopeInActionGroup(scope, params.Duration))
+		group, err := wrapSingleScopeInActionGroup(scope, params.TaskType, params.Duration)
+		if err != nil {
+			return nil, err
+		}
+		ags = append(ags, group)
 	}
 
-	return ags
+	return ags, nil
+}
+
+func invalidMaintenanceTaskType(taskType MaintenanceTaskType) error {
+	return fmt.Errorf("specified invalid maintenance task type: %d. Available choices: lock, drain", taskType)
+}
+
+func validateMaintenanceTaskType(taskType MaintenanceTaskType) error {
+	switch taskType {
+	case LockTask, DrainTask:
+		return nil
+	default:
+		return invalidMaintenanceTaskType(taskType)
+	}
 }
 
 func (c *defaultCMSClient) CreateMaintenanceTask(params MaintenanceTaskParams) (MaintenanceTask, error) {
+	if err := validateMaintenanceTaskType(params.TaskType); err != nil {
+		return nil, err
+	}
+
 	request := &Ydb_Maintenance.CreateMaintenanceTaskRequest{
 		OperationParams: c.connectionsFactory.OperationParams(),
 		TaskOptions: &Ydb_Maintenance.MaintenanceTaskOptions{
@@ -228,15 +268,19 @@ func (c *defaultCMSClient) CreateMaintenanceTask(params MaintenanceTaskParams) (
 		},
 	}
 
+	var err error
 	if params.ScopeType == NodeScope {
-		request.ActionGroups = actionGroupsFromNodes(params)
+		request.ActionGroups, err = actionGroupsFromNodes(params)
 	} else { // HostScope
-		request.ActionGroups = actionGroupsFromHosts(params)
+		request.ActionGroups, err = actionGroupsFromHosts(params)
+	}
+	if err != nil {
+		return nil, err
 	}
 
 	result := &Ydb_Maintenance.MaintenanceTaskResult{}
 	c.logger.Debug("Invoke CreateMaintenanceTask method")
-	_, err := c.executeMaintenanceOperation(result,
+	_, err = c.executeMaintenanceOperation(result,
 		func(ctx context.Context, cl Ydb_Maintenance_V1.MaintenanceServiceClient) (client.OperationResponse, error) {
 			return cl.CreateMaintenanceTask(ctx, request)
 		},

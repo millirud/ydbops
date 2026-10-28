@@ -112,6 +112,7 @@ func (o *Options) Run(f cmdutil.Factory) error {
 			AvailabilityMode: o.GetAvailabilityMode(),
 			Priority:         int32(o.Priority),
 			ScopeType:        cms.NodeScope,
+			TaskType:         cms.LockTask,
 			TaskUID:          taskUID,
 		})
 	} else {
@@ -121,6 +122,7 @@ func (o *Options) Run(f cmdutil.Factory) error {
 			AvailabilityMode: o.GetAvailabilityMode(),
 			Priority:         int32(o.Priority),
 			ScopeType:        cms.HostScope,
+			TaskType:         cms.LockTask,
 			TaskUID:          taskUID,
 		})
 	}
