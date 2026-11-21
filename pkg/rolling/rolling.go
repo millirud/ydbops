@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"os"
 	"os/signal"
 	"slices"
 	"sort"
@@ -59,7 +58,8 @@ type state struct {
 }
 
 const (
-	RestartTaskPrefix = "rolling-restart-"
+	RestartTaskPrefix         = "rolling-restart-"
+	maintenanceCleanupTimeout = 30 * time.Second
 )
 
 type Executer interface {
@@ -103,16 +103,11 @@ func (e *executer) Execute() error {
 	defer cancel()
 
 	if e.opts.CleanupOnExit {
-		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		var stop context.CancelFunc
+		ctx, stop = signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
 
 		e.logger.Infof("Set up signal interception for SIGINT and SIGTERM")
-
-		go func() {
-			sig := <-sigCh
-			e.logger.Infof("Received signal: %v, canceling operations", sig)
-			cancel()
-		}()
 	}
 
 	r.cms.SetContext(ctx)
@@ -120,16 +115,7 @@ func (e *executer) Execute() error {
 	e.logger.Info("Start rolling restart")
 	err := r.DoRestart(ctx)
 
-	if errors.Is(err, context.Canceled) && e.opts.CleanupOnExit {
-		e.logger.Info("Operation was cancelled, cleaning up maintenance tasks")
-
-		if cleanupErr := r.cleanupRollingRestart(); cleanupErr != nil {
-			e.logger.Errorf("Failed to cleanup maintenance tasks on signal: %v", cleanupErr)
-		} else {
-			e.logger.Info("Successfully cleaned up maintenance tasks")
-		}
-		return err
-	} else if err != nil {
+	if err != nil {
 		e.logger.Errorf("Failed to complete restart: %+v", err)
 		return err
 	}
@@ -138,7 +124,7 @@ func (e *executer) Execute() error {
 	return nil
 }
 
-func (r *Rolling) DoRestart(ctx context.Context) error {
+func (r *Rolling) DoRestart(ctx context.Context) (err error) {
 	state, err := r.prepareState()
 	if err != nil {
 		return err
@@ -204,6 +190,22 @@ func (r *Rolling) DoRestart(ctx context.Context) error {
 		TaskType:         cms.LockTask,
 		Nodes:            nodesToRestart,
 	}
+
+	// Register cleanup before the RPC: CMS may accept the task even if the
+	// response is lost on cancellation. cmsWaitingLoop joins all workers before
+	// returning, so no node restart is still using this lock when it is dropped.
+	defer func() {
+		if err == nil {
+			return
+		}
+		var drainErr *drainError
+		if !errors.As(err, &drainErr) && !(ctx.Err() != nil && r.opts.CleanupOnExit) {
+			return
+		}
+		if cleanupErr := r.cleanupMaintenanceTask(ctx, taskParams.TaskUID); cleanupErr != nil {
+			err = errors.Join(err, cleanupErr)
+		}
+	}()
 
 	task, err := r.cms.CreateMaintenanceTask(taskParams)
 	if err != nil {
@@ -618,6 +620,17 @@ func (r *Rolling) cleanupRollingRestart() error {
 		if err != nil {
 			return fmt.Errorf("failed to drop maintenance task: %w", err)
 		}
+	}
+	return nil
+}
+
+// Cleanup must outlive cancellation of the restart, but remain bounded. Drop
+// only the owned task rather than listing and deleting other maintenance work.
+func (r *Rolling) cleanupMaintenanceTask(ctx context.Context, taskID string) error {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), maintenanceCleanupTimeout)
+	defer cancel()
+	if _, err := r.cms.WithContext(cleanupCtx).DropMaintenanceTask(taskID); err != nil {
+		return fmt.Errorf("failed to drop maintenance task %s: %w", taskID, err)
 	}
 	return nil
 }

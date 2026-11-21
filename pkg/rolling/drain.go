@@ -23,9 +23,7 @@ func (r *Rolling) restartNode(ctx context.Context, node *Ydb_Maintenance.Node) e
 		// Keep the drain task until RestartNode returns. Also clean up after failed or
 		// cancelled creation: CMS may have accepted the request before the RPC failed.
 		defer func() {
-			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-			defer cancel()
-			if _, err := r.cms.WithContext(cleanupCtx).DropMaintenanceTask(taskID); err != nil {
+			if err := r.cleanupMaintenanceTask(ctx, taskID); err != nil {
 				r.logger.Warnf("Failed to drop drain task %s: %v", taskID, err)
 			}
 		}()
