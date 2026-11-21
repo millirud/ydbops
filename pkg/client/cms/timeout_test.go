@@ -37,7 +37,7 @@ var _ = Describe("CMS client deadline", func() {
 	// this test could have been an e2e test as most our tests, but it relies on overriding
 	// timeout values for quicker test (still cant use fake clock though), so we need to call
 	// functions directly -> integration test instead
-	It("aborts a stuck CreateMaintenanceTask at the per-call deadline", func() {
+	DescribeTable("aborts a stuck CreateMaintenanceTask at its deadline", func(transportTimeout, deadline, testTimeout time.Duration) {
 		lis, err := net.Listen("tcp", "127.0.0.1:0")
 		Expect(err).NotTo(HaveOccurred())
 
@@ -56,18 +56,15 @@ var _ = Describe("CMS client deadline", func() {
 			GRPCPort:         port,
 			GRPCSecure:       false,
 			OperationTimeout: 0, // this is a YDB OperationTimeout, does not make sense for this test as our mock does not use it
-			TransportTimeout: 200 * time.Millisecond,
+			TransportTimeout: transportTimeout,
 		})
 		creds := authprovider.NewProviderFromToken("fake")
 		client := cms.NewCMSClient(factory, zap.NewNop().Sugar(), creds)
 		DeferCleanup(client.Close)
 
-		// Setting a global timeout for this test:
-		// we have request + 200ms timeout + one second (default) backoff retry + another 200ms timeout
-		// this fits in 1.5 seconds nicely
-		bounded, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+		bounded, cancel := context.WithTimeout(context.Background(), deadline)
 		defer cancel()
-		client.SetContext(bounded)
+		client = client.WithContext(bounded)
 
 		// to check if the call is stuck, we need to run the actual test in a
 		// separate goroutine and check on deadline expiration
@@ -91,8 +88,11 @@ var _ = Describe("CMS client deadline", func() {
 		case r := <-done:
 			Expect(r.err).To(HaveOccurred())
 			GinkgoT().Logf("CreateMaintenanceTask returned %v after %v", r.err, r.elapsed)
-		case <-time.After(2 * time.Second):
-			Fail("CreateMaintenanceTask expected to return within 1.5 seconds but still didn't return after 2 seconds")
+		case <-time.After(testTimeout):
+			Fail("CreateMaintenanceTask did not respect its deadline")
 		}
-	})
+	},
+		Entry("transport deadline", 200*time.Millisecond, 1500*time.Millisecond, 2*time.Second),
+		Entry("drain deadline shorter than transport deadline", 5*time.Second, 50*time.Millisecond, time.Second),
+	)
 })

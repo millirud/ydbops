@@ -2,6 +2,7 @@ package rolling
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -19,11 +20,12 @@ type restartStatus struct {
 }
 
 type restartHandler struct {
-	ctx       context.Context
-	logger    *zap.SugaredLogger
-	queue     chan *Ydb_Maintenance.ActionGroupStates
-	restarter restarters.Restarter
-	statusCh  chan<- restartStatus
+	ctx         context.Context
+	logger      *zap.SugaredLogger
+	queue       chan *Ydb_Maintenance.ActionGroupStates
+	restarter   restarters.Restarter
+	statusCh    chan<- restartStatus
+	restartNode func(context.Context, *Ydb_Maintenance.Node) error
 
 	// TODO(shmel1k@): probably, not needed here.
 	nodes map[uint32]*Ydb_Maintenance.Node
@@ -66,18 +68,29 @@ func (rh *restartHandler) run() {
 
 					rh.logger.Debugf("Restart node with id: %d", node.GetNodeId())
 
-					// TODO(shmel1k@): draining should be implemented in RestartNode.
-					rh.logger.Debugf("Drain node with id: %d", node.GetNodeId())
-					// TODO: drain node, but public draining api is not available yet
-					rh.logger.Info("DRAINING NOT IMPLEMENTED YET")
-
-					err := rh.restarter.RestartNode(node)
-					rh.statusCh <- restartStatus{
+					if rh.ctx.Err() != nil {
+						return
+					}
+					var err error
+					if rh.restartNode != nil {
+						err = rh.restartNode(rh.ctx, node)
+					} else {
+						err = rh.restarter.RestartNode(node)
+					}
+					select {
+					case <-rh.ctx.Done():
+						return
+					case rh.statusCh <- restartStatus{
 						nodeID: lock.Scope.GetNodeId(),
 						as:     as,
 						err:    err,
+					}:
 					}
 
+					var drainErr *drainError
+					if errors.As(err, &drainErr) {
+						return
+					}
 					select {
 					case <-rh.ctx.Done():
 						return

@@ -1,0 +1,3 @@
+kind: Added
+body: Add optional CMS drain before node restarts with configurable timeout and stop/force timeout actions.
+time: 2026-11-21T18:00:00+03:00

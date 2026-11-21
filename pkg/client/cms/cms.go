@@ -48,6 +48,7 @@ type Client interface {
 	Maintenance
 
 	SetContext(ctx context.Context)
+	WithContext(ctx context.Context) Client
 	Close() error
 }
 
@@ -69,6 +70,13 @@ func NewCMSClient(
 		connectionsFactory:  connectionsFactory,
 		credentialsProvider: cp,
 	}
+}
+
+// WithContext returns a copy so concurrent node drains have independent deadlines.
+func (c *defaultCMSClient) WithContext(ctx context.Context) Client {
+	clone := *c
+	clone.ctx = ctx
+	return &clone
 }
 
 func (c *defaultCMSClient) SetContext(ctx context.Context) {
@@ -367,7 +375,7 @@ func (c *defaultCMSClient) executeOperation(
 	out proto.Message,
 	method func(context.Context, *grpc.ClientConn) (client.OperationResponse, error),
 ) (*Ydb_Operations.Operation, error) {
-	ctx, cancel := c.credentialsProvider.ContextWithAuth(context.TODO())
+	ctx, cancel := c.credentialsProvider.ContextWithAuth(c.ctx)
 	defer cancel()
 
 	op, err := utils.WrapWithRetries(c.ctx, defaultRetryCount, func() (*Ydb_Operations.Operation, error) {

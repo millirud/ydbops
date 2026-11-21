@@ -276,7 +276,11 @@ func (r *Rolling) cmsWaitingLoop(ctx context.Context, task cms.MaintenanceTask) 
 				}
 			}
 
-			if completed := r.processActionGroupStates(ctx, task.GetActionGroupStates()); completed {
+			completed, err := r.processActionGroupStates(ctx, task.GetActionGroupStates())
+			if err != nil {
+				return err
+			}
+			if completed {
 				break
 			}
 		}
@@ -320,19 +324,23 @@ func (r *Rolling) cmsWaitingLoop(ctx context.Context, task cms.MaintenanceTask) 
 	return nil
 }
 
-func (r *Rolling) handleRestartStatus(ctx context.Context, statuses <-chan restartStatus, expectedRestarts int) {
+func (r *Rolling) handleRestartStatus(ctx context.Context, statuses <-chan restartStatus, expectedRestarts int) error {
 	for i := 0; i < expectedRestarts; i++ {
 		select {
 		case <-ctx.Done():
 			// if we caught cancellation here, we will close the done channel of restartHandler as soon as this function
 			// exits, restartHandler will exit as well
-			return
+			return ctx.Err()
 		case st := <-statuses:
 			if st.err == nil {
 				r.atomicRememberComplete(st.as.GetActionUid())
 				continue
 			}
 
+			var drainErr *drainError
+			if errors.As(st.err, &drainErr) {
+				return st.err
+			}
 			retriesUntilNow := r.state.retriesMadeForNode[st.nodeID]
 			r.state.retriesMadeForNode[st.nodeID]++
 
@@ -349,6 +357,7 @@ func (r *Rolling) handleRestartStatus(ctx context.Context, statuses <-chan resta
 			}
 		}
 	}
+	return nil
 }
 
 func (r *Rolling) getPerformedActions(actions []*Ydb_Maintenance.ActionGroupStates) []*Ydb_Maintenance.ActionGroupStates {
@@ -383,10 +392,12 @@ func (r *Rolling) getPerformedActions(actions []*Ydb_Maintenance.ActionGroupStat
 	return performed
 }
 
-func (r *Rolling) processActionGroupStates(ctx context.Context, actions []*Ydb_Maintenance.ActionGroupStates) bool {
+func (r *Rolling) processActionGroupStates(ctx context.Context, actions []*Ydb_Maintenance.ActionGroupStates) (bool, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	performed := r.getPerformedActions(actions)
 	if len(performed) == 0 {
-		return false
+		return false, nil
 	}
 
 	r.logger.Infof("%d ActionGroupStates moved to PERFORMED, will restart now...", len(performed))
@@ -399,7 +410,7 @@ func (r *Rolling) processActionGroupStates(ctx context.Context, actions []*Ydb_M
 	}
 
 	statusCh := make(chan restartStatus, chSize)
-	done := make(chan struct{})
+	done := make(chan error, 1)
 
 	filteredActions := make([]*Ydb_Maintenance.ActionGroupStates, 0, len(performed))
 	expectedRestarts := 0
@@ -427,25 +438,30 @@ func (r *Rolling) processActionGroupStates(ctx context.Context, actions []*Ydb_M
 	}
 
 	go func() {
-		r.handleRestartStatus(ctx, statusCh, expectedRestarts)
-		close(done)
+		err := r.handleRestartStatus(ctx, statusCh, expectedRestarts)
+		if err != nil {
+			cancel()
+		}
+		done <- err
 	}()
 
 	r.dispatchActions(ctx, filteredActions, statusCh)
 
-	<-done
+	if err := <-done; err != nil {
+		return false, err
+	}
 
 	result, err := r.cms.CompleteAction(r.completedActions)
 	if err != nil {
 		r.logger.Warnf("Failed to complete action: %+v", err)
-		return false
+		return false, nil
 	}
 	r.logCompleteResult(result)
 	r.state.unreportedButFinishedActionIds = []string{}
 
 	restartCompleted := len(actions) == len(result.ActionStatuses)
 
-	return restartCompleted
+	return restartCompleted, nil
 }
 
 func (r *Rolling) dispatchActions(ctx context.Context, actions []*Ydb_Maintenance.ActionGroupStates, statusCh chan restartStatus) {
@@ -473,6 +489,7 @@ func (r *Rolling) dispatchAll(ctx context.Context, actions []*Ydb_Maintenance.Ac
 		r.state.nodes,
 		statusCh,
 	)
+	handler.restartNode = r.restartNode
 	handler.run()
 
 	for _, gs := range actions {
@@ -512,6 +529,7 @@ func (r *Rolling) dispatchByTenant(ctx context.Context, actions []*Ydb_Maintenan
 				r.state.nodes,
 				statusCh,
 			)
+			handler.restartNode = r.restartNode
 			handler.run()
 
 			for _, gs := range actions {

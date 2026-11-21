@@ -80,6 +80,24 @@ ydbops restart --tenant \
 
 ---
 
+## Drain before restart
+
+`ydbops restart --with-drain` creates a separate CMS drain task for each node
+before restarting it and waits for the drain action to reach `PERFORMED`.
+
+| Flag | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `--with-drain` | bool | `false` | Drain each node before restarting it. |
+| `--drain-wait-timeout` | duration | `15m` | Maximum drain wait, e.g. `5s`, `10m`, `3h`. |
+| `--drain-wait-timeout-action` | string | `stop` | `stop` returns an error and stops the restart; `force` logs a warning and continues after a drain timeout. |
+
+```bash
+ydbops restart --with-drain --drain-wait-timeout 10m --drain-wait-timeout-action force
+```
+
+CMS errors and cancellation stop the operation even with `force`. Drain tasks
+are removed after the node restart or when draining fails.
+
 ## For developers:
 
 ### Prerequisites

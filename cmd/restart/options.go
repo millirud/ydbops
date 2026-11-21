@@ -1,7 +1,6 @@
 package restart
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/spf13/pflag"
@@ -13,36 +12,12 @@ import (
 	"github.com/ydb-platform/ydbops/pkg/rolling/restarters"
 )
 
-const (
-	defaultDrainWaitTimeout    = 15 * time.Minute
-	drainWaitTimeoutActionFail = "fail"
-	drainWaitTimeoutActionSkip = "skip"
-)
-
 type Options struct {
 	*rolling.RestartOptions
-
-	// Accepted by the CLI. Restart logic does not use these values yet.
-	withDrain              bool
-	drainWaitTimeout       time.Duration
-	drainWaitTimeoutAction string
 }
 
 func (o *Options) DefineFlags(fs *pflag.FlagSet) {
 	o.RestartOptions.DefineFlags(fs)
-
-	fs.BoolVar(&o.withDrain, "with-drain", false,
-		`Before restarting a node, create a separate CMS drain task so tablets move away from it.`)
-
-	fs.DurationVar(&o.drainWaitTimeout, "drain-wait-timeout", defaultDrainWaitTimeout,
-		`How long to wait for a node drain to finish before applying --drain-wait-timeout-action. E.g. '5s', '10m', '3h'.`)
-
-	fs.StringVar(&o.drainWaitTimeoutAction, "drain-wait-timeout-action", drainWaitTimeoutActionSkip,
-		fmt.Sprintf(`What to do when --drain-wait-timeout is exceeded. Available choices: %s, %s.
-%s stops the restart of the node and returns an error.
-%s logs a warning and continues the restart.`,
-			drainWaitTimeoutActionFail, drainWaitTimeoutActionSkip,
-			drainWaitTimeoutActionFail, drainWaitTimeoutActionSkip))
 }
 
 func PrepareRestarters(

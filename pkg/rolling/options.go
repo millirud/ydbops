@@ -13,6 +13,9 @@ import (
 )
 
 const (
+	DefaultDrainWaitTimeout        = 15 * time.Minute
+	DrainWaitTimeoutActionStop     = "stop"
+	DrainWaitTimeoutActionForce    = "force"
 	DefaultRetryCount              = 3
 	DefaultCMSQueryIntervalSeconds = 10
 	DefaultRestartDurationSeconds  = 60
@@ -22,6 +25,9 @@ const (
 )
 
 type RestartOptions struct {
+	WithDrain              bool
+	DrainWaitTimeout       time.Duration
+	DrainWaitTimeoutAction string
 	options.TargetingOptions
 
 	RestartRetryNumber         int
@@ -43,6 +49,13 @@ type RestartOptions struct {
 var rawSSHUnparsedArgs string
 
 func (o *RestartOptions) Validate() error {
+	if o.DrainWaitTimeout <= 0 {
+		return fmt.Errorf("--drain-wait-timeout must be positive")
+	}
+	if o.DrainWaitTimeoutAction != DrainWaitTimeoutActionStop && o.DrainWaitTimeoutAction != DrainWaitTimeoutActionForce {
+		return fmt.Errorf("invalid --drain-wait-timeout-action %q: available choices: stop, force", o.DrainWaitTimeoutAction)
+	}
+
 	err := o.TargetingOptions.Validate()
 	if err != nil {
 		return err
@@ -71,6 +84,9 @@ func (o *RestartOptions) Validate() error {
 
 func (o *RestartOptions) DefineFlags(fs *pflag.FlagSet) {
 	o.TargetingOptions.DefineFlags(fs)
+	fs.BoolVar(&o.WithDrain, "with-drain", false, "Before restarting a node, create a separate CMS drain task so tablets move away from it.")
+	fs.DurationVar(&o.DrainWaitTimeout, "drain-wait-timeout", DefaultDrainWaitTimeout, "How long to wait for a node drain to finish before applying --drain-wait-timeout-action. Examples: 5s, 10m, 3h.")
+	fs.StringVar(&o.DrainWaitTimeoutAction, "drain-wait-timeout-action", DrainWaitTimeoutActionStop, "What to do when --drain-wait-timeout is exceeded: stop returns an error; force logs a warning and continues the restart.")
 
 	fs.StringVar(&o.CustomSystemdUnitName, "systemd-unit", "", "Specify custom systemd unit name to restart")
 
@@ -113,6 +129,9 @@ Default 0 means no grouping by tenant, restarting with global --nodes-inflight`)
 
 func (o *RestartOptions) GetRestartDuration(nNodes int) *durationpb.Duration {
 	singleBatchRestartTime := time.Second * time.Duration(o.RestartDuration) * time.Duration(o.RestartRetryNumber)
+	if o.WithDrain {
+		singleBatchRestartTime += o.DrainWaitTimeout * time.Duration(o.RestartRetryNumber)
+	}
 	singleBatchWithWait := singleBatchRestartTime + o.DelayBetweenRestarts
 	maximumTotalBatches := int(math.Ceil(float64(nNodes) / float64(o.NodesInflight)))
 

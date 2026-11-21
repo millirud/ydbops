@@ -13,7 +13,15 @@ const (
 	HostScope MaintenanceScopeType = 2
 )
 
+type MaintenanceTaskType int
+
+const (
+	LockTask MaintenanceTaskType = iota
+	DrainTask
+)
+
 type MaintenanceTaskParams struct {
+	TaskType         MaintenanceTaskType
 	TaskUID          string
 	AvailabilityMode Ydb_Maintenance.AvailabilityMode
 	Priority         int32
