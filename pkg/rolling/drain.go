@@ -41,7 +41,7 @@ func (r *Rolling) drainNode(ctx context.Context, node *Ydb_Maintenance.Node, tas
 	waitCtx, cancel := context.WithTimeout(ctx, r.opts.DrainWaitTimeout)
 	defer cancel()
 	cl := r.cms.WithContext(waitCtx)
-	task, err := cl.CreateMaintenanceTask(cms.MaintenanceTaskParams{
+	_, err := cl.CreateMaintenanceTask(cms.MaintenanceTaskParams{
 		TaskUID:          taskID,
 		TaskType:         cms.DrainTask,
 		ScopeType:        cms.NodeScope,
@@ -58,13 +58,22 @@ func (r *Rolling) drainNode(ctx context.Context, node *Ydb_Maintenance.Node, tas
 			err = waitCtx.Err()
 			break
 		}
+		// Observe completion through GetMaintenanceTask, including the first
+		// check after creation. RefreshMaintenanceTask is not a status read.
+		task, getErr := cl.GetMaintenanceTask(taskID)
+		if getErr != nil {
+			err = getErr
+			break
+		}
+		if err = waitCtx.Err(); err != nil {
+			break
+		}
 		if drainPerformed(task) {
 			return nil
 		}
 		if err = waitOrCancel(waitCtx, interval); err != nil {
 			break
 		}
-		task, err = cl.RefreshMaintenanceTask(taskID)
 	}
 	if ctx.Err() != nil {
 		return ctx.Err()

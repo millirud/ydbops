@@ -55,6 +55,9 @@ func (c *cleanupCMS) Nodes() ([]*Ydb_Maintenance.Node, error) {
 	return []*Ydb_Maintenance.Node{{NodeId: 1, State: Ydb_Maintenance.ItemState_ITEM_STATE_UP}}, nil
 }
 func (c *cleanupCMS) Tenants() ([]string, error) { return nil, nil }
+func (c *cleanupCMS) GetMaintenanceTask(string) (cms.MaintenanceTask, error) {
+	return &Ydb_Maintenance.MaintenanceTaskResult{}, c.ctx.Err()
+}
 func (c *cleanupCMS) MaintenanceTasks(string) ([]cms.MaintenanceTask, error) {
 	// The initial cleanup runs before this restart owns any tasks.
 	return nil, nil

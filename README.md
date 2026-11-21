@@ -83,7 +83,8 @@ ydbops restart --tenant \
 ## Drain before restart
 
 `ydbops restart --with-drain` creates a separate CMS drain task for each node
-before restarting it and waits for the drain action to reach `PERFORMED`.
+before restarting it and polls `Ydb.Maintenance.V1.MaintenanceService/GetMaintenanceTask`
+until the drain action reaches `ACTION_STATUS_PERFORMED`.
 
 | Flag | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
