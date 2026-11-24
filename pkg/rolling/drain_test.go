@@ -23,6 +23,7 @@ type drainCMS struct {
 	createErr error
 	getErr    error
 	getTask   func(context.Context, string) (cms.MaintenanceTask, error)
+	dropTask  func(context.Context, string) error
 	dropped   *bool
 }
 
@@ -41,8 +42,11 @@ func (c *drainCMS) GetMaintenanceTask(id string) (cms.MaintenanceTask, error) {
 	}
 	return &Ydb_Maintenance.MaintenanceTaskResult{ActionGroupStates: []*Ydb_Maintenance.ActionGroupStates{{ActionStates: []*Ydb_Maintenance.ActionState{{Status: c.status}}}}}, c.getErr
 }
-func (c *drainCMS) DropMaintenanceTask(string) (string, error) {
+func (c *drainCMS) DropMaintenanceTask(id string) (string, error) {
 	*c.dropped = true
+	if c.dropTask != nil {
+		return "", c.dropTask(c.ctx, id)
+	}
 	return "", c.ctx.Err()
 }
 
@@ -95,7 +99,7 @@ func TestDrainRestart(t *testing.T) {
 			if tc.cancel {
 				cancel()
 			}
-			err := r.restartNode(ctx, &Ydb_Maintenance.Node{NodeId: 42})
+			err := r.restartNode(ctx, &Ydb_Maintenance.Node{NodeId: 42}, nil)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("error = %v", err)
 			}
@@ -135,7 +139,7 @@ func TestDrainStopAbortsBatch(t *testing.T) {
 func TestRestartWithoutDrain(t *testing.T) {
 	rst := &drainRestarter{}
 	r := &Rolling{opts: &RestartOptions{}, restarter: rst}
-	if err := r.restartNode(context.Background(), &Ydb_Maintenance.Node{}); err != nil || rst.calls != 1 {
+	if err := r.restartNode(context.Background(), &Ydb_Maintenance.Node{}, nil); err != nil || rst.calls != 1 {
 		t.Fatalf("err=%v restarts=%d", err, rst.calls)
 	}
 }
@@ -207,7 +211,7 @@ func TestDrainWaitsForGetPerformed(t *testing.T) {
 		cms: cl, restarter: rst, logger: zap.NewNop().Sugar(), state: &state{restartTaskUID: "restart"},
 		opts: &RestartOptions{WithDrain: true, DrainWaitTimeout: 10 * time.Second, DrainWaitTimeoutAction: DrainWaitTimeoutActionStop, CMSQueryInterval: 1},
 	}
-	if err := r.restartNode(context.Background(), &Ydb_Maintenance.Node{NodeId: 42}); err != nil {
+	if err := r.restartNode(context.Background(), &Ydb_Maintenance.Node{NodeId: 42}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if reads != len(statuses) || rst.calls != 1 || !dropped {
@@ -233,17 +237,48 @@ func TestDrainGetDeadline(t *testing.T) {
 				cms: cl, restarter: rst, logger: zap.NewNop().Sugar(), state: &state{restartTaskUID: "restart"},
 				opts: &RestartOptions{WithDrain: true, DrainWaitTimeout: 20 * time.Millisecond, DrainWaitTimeoutAction: action},
 			}
-			err := r.restartNode(context.Background(), &Ydb_Maintenance.Node{NodeId: 42})
+			ctx, cancel := context.WithCancelCause(context.Background())
+			defer cancel(nil)
+			err := r.restartNode(ctx, &Ydb_Maintenance.Node{NodeId: 42}, cancel)
 			if action == DrainWaitTimeoutActionStop {
-				if !errors.Is(err, context.DeadlineExceeded) || rst.calls != 0 {
+				if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(context.Cause(ctx), context.DeadlineExceeded) || rst.calls != 0 {
 					t.Fatalf("error=%v restarts=%d", err, rst.calls)
 				}
-			} else if err != nil || rst.calls != 1 {
+			} else if err != nil || ctx.Err() != nil || rst.calls != 1 {
 				t.Fatalf("error=%v restarts=%d", err, rst.calls)
 			}
 			if !queried || !dropped {
 				t.Fatalf("queried=%v dropped=%v", queried, dropped)
 			}
 		})
+	}
+}
+
+func TestDrainStopCancelsBeforeCleanup(t *testing.T) {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	dropped := false
+	cl := &drainCMS{
+		params: &cms.MaintenanceTaskParams{}, dropped: &dropped,
+		status: Ydb_Maintenance.ActionState_ACTION_STATUS_IN_PROGRESS,
+		dropTask: func(cleanupCtx context.Context, _ string) error {
+			// A slow CMS drop must not postpone cancellation of the other workers.
+			if !errors.Is(context.Cause(ctx), context.DeadlineExceeded) {
+				t.Errorf("workers were not stopped before drain cleanup: %v", context.Cause(ctx))
+			}
+			if err := cleanupCtx.Err(); err != nil {
+				t.Errorf("cleanup inherited cancellation: %v", err)
+			}
+			return nil
+		},
+	}
+	rst := &drainRestarter{}
+	r := &Rolling{
+		cms: cl, restarter: rst, logger: zap.NewNop().Sugar(), state: &state{restartTaskUID: "restart"},
+		opts: &RestartOptions{WithDrain: true, DrainWaitTimeout: 5 * time.Millisecond, DrainWaitTimeoutAction: DrainWaitTimeoutActionStop},
+	}
+	err := r.restartNode(ctx, &Ydb_Maintenance.Node{NodeId: 42}, cancel)
+	if !errors.Is(err, context.DeadlineExceeded) || rst.calls != 0 || !dropped {
+		t.Fatalf("error=%v restarts=%d dropped=%v", err, rst.calls, dropped)
 	}
 }

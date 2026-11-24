@@ -332,7 +332,7 @@ func (r *Rolling) handleRestartStatus(ctx context.Context, statuses <-chan resta
 		case <-ctx.Done():
 			// if we caught cancellation here, we will close the done channel of restartHandler as soon as this function
 			// exits, restartHandler will exit as well
-			return ctx.Err()
+			return context.Cause(ctx)
 		case st := <-statuses:
 			if st.err == nil {
 				r.atomicRememberComplete(st.as.GetActionUid())
@@ -395,8 +395,8 @@ func (r *Rolling) getPerformedActions(actions []*Ydb_Maintenance.ActionGroupStat
 }
 
 func (r *Rolling) processActionGroupStates(ctx context.Context, actions []*Ydb_Maintenance.ActionGroupStates) (bool, error) {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
 	performed := r.getPerformedActions(actions)
 	if len(performed) == 0 {
 		return false, nil
@@ -442,12 +442,13 @@ func (r *Rolling) processActionGroupStates(ctx context.Context, actions []*Ydb_M
 	go func() {
 		err := r.handleRestartStatus(ctx, statusCh, expectedRestarts)
 		if err != nil {
-			cancel()
+			cancel(err)
+			err = context.Cause(ctx)
 		}
 		done <- err
 	}()
 
-	r.dispatchActions(ctx, filteredActions, statusCh)
+	r.dispatchActions(ctx, filteredActions, statusCh, cancel)
 
 	if err := <-done; err != nil {
 		return false, err
@@ -466,22 +467,22 @@ func (r *Rolling) processActionGroupStates(ctx context.Context, actions []*Ydb_M
 	return restartCompleted, nil
 }
 
-func (r *Rolling) dispatchActions(ctx context.Context, actions []*Ydb_Maintenance.ActionGroupStates, statusCh chan restartStatus) {
+func (r *Rolling) dispatchActions(ctx context.Context, actions []*Ydb_Maintenance.ActionGroupStates, statusCh chan restartStatus, cancel context.CancelCauseFunc) {
 	if slices.ContainsFunc(actions, r.isStorageNodeActionGroupState) {
 		r.logger.Debugf("ignoring tenants-inflight. dispatching all storage nodes")
-		r.dispatchAll(ctx, actions, statusCh)
+		r.dispatchAll(ctx, actions, statusCh, cancel)
 
 		return
 	}
 
 	if r.opts.TenantsInflight > 0 {
-		r.dispatchByTenant(ctx, actions, statusCh)
+		r.dispatchByTenant(ctx, actions, statusCh, cancel)
 	} else {
-		r.dispatchAll(ctx, actions, statusCh)
+		r.dispatchAll(ctx, actions, statusCh, cancel)
 	}
 }
 
-func (r *Rolling) dispatchAll(ctx context.Context, actions []*Ydb_Maintenance.ActionGroupStates, statusCh chan restartStatus) {
+func (r *Rolling) dispatchAll(ctx context.Context, actions []*Ydb_Maintenance.ActionGroupStates, statusCh chan restartStatus, cancel context.CancelCauseFunc) {
 	handler := newRestartHandler(
 		ctx,
 		r.logger,
@@ -491,7 +492,9 @@ func (r *Rolling) dispatchAll(ctx context.Context, actions []*Ydb_Maintenance.Ac
 		r.state.nodes,
 		statusCh,
 	)
-	handler.restartNode = r.restartNode
+	handler.restartNode = func(ctx context.Context, node *Ydb_Maintenance.Node) error {
+		return r.restartNode(ctx, node, cancel)
+	}
 	handler.run()
 
 	for _, gs := range actions {
@@ -501,7 +504,7 @@ func (r *Rolling) dispatchAll(ctx context.Context, actions []*Ydb_Maintenance.Ac
 	handler.stop(true)
 }
 
-func (r *Rolling) dispatchByTenant(ctx context.Context, actions []*Ydb_Maintenance.ActionGroupStates, statusCh chan restartStatus) {
+func (r *Rolling) dispatchByTenant(ctx context.Context, actions []*Ydb_Maintenance.ActionGroupStates, statusCh chan restartStatus, cancel context.CancelCauseFunc) {
 	groups := collections.GroupByFunc(actions, r.getStateNodeTenant)
 
 	sem := make(chan struct{}, r.opts.TenantsInflight)
@@ -531,7 +534,9 @@ func (r *Rolling) dispatchByTenant(ctx context.Context, actions []*Ydb_Maintenan
 				r.state.nodes,
 				statusCh,
 			)
-			handler.restartNode = r.restartNode
+			handler.restartNode = func(ctx context.Context, node *Ydb_Maintenance.Node) error {
+				return r.restartNode(ctx, node, cancel)
+			}
 			handler.run()
 
 			for _, gs := range actions {

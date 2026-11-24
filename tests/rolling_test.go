@@ -1177,26 +1177,11 @@ var _ = Describe("Test Rolling", func() {
 							},
 							ActionGroups: mock.MakeActionGroupsFromNodeIds(1, 2),
 						},
-						&Ydb_Maintenance.CompleteActionRequest{
-							ActionUids: []*Ydb_Maintenance.ActionUid{
-								{
-									TaskUid:  "task-UUID-1",
-									GroupId:  "group-UUID-1",
-									ActionId: "action-UUID-1",
-								},
-							},
-						},
-						&Ydb_Maintenance.ListMaintenanceTasksRequest{
-							User: &mock.TestUser,
-						},
-						&Ydb_Maintenance.GetMaintenanceTaskRequest{
-							TaskUid: "task-UUID-1",
-						},
 						&Ydb_Maintenance.DropMaintenanceTaskRequest{
 							TaskUid: "task-UUID-1",
 						},
 					},
-					expectedOutputRegexps: []string{},
+					expectedOutputRegexps: []string{"Invoke DropMaintenanceTask", "Error: context canceled"},
 				},
 			},
 		},

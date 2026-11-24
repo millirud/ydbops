@@ -179,7 +179,7 @@ func RunTestCase(tc TestCase) {
 		expectedPlaceholders := make(map[string]int)
 		actualPlaceholders := make(map[string]int)
 
-		Expect(len(step.expectedRequests)).To(Equal(len(actualRequests)))
+		Expect(len(actualRequests)).To(Equal(len(step.expectedRequests)), "ydbops output:\n%s", string(outputBytes))
 
 		for i, expected := range step.expectedRequests {
 			actual := actualRequests[i]
