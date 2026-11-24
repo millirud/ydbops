@@ -160,8 +160,7 @@ func (c *defaultCMSClient) GetMaintenanceTask(taskID string) (MaintenanceTask, e
 	_, err := c.executeMaintenanceOperation(&result,
 		func(ctx context.Context, cl Ydb_Maintenance_V1.MaintenanceServiceClient) (client.OperationResponse, error) {
 			return cl.GetMaintenanceTask(ctx, &Ydb_Maintenance.GetMaintenanceTaskRequest{
-				OperationParams: c.connectionsFactory.OperationParams(),
-				TaskUid:         taskID,
+				TaskUid: taskID,
 			})
 		},
 	)
@@ -267,13 +266,15 @@ func (c *defaultCMSClient) CreateMaintenanceTask(params MaintenanceTaskParams) (
 	}
 
 	request := &Ydb_Maintenance.CreateMaintenanceTaskRequest{
-		OperationParams: c.connectionsFactory.OperationParams(),
 		TaskOptions: &Ydb_Maintenance.MaintenanceTaskOptions{
 			TaskUid:          params.TaskUID,
 			AvailabilityMode: params.AvailabilityMode,
 			Priority:         params.Priority,
 			Description:      "Rolling restart maintenance task",
 		},
+	}
+	if params.TaskType != DrainTask {
+		request.OperationParams = c.connectionsFactory.OperationParams()
 	}
 
 	var err error
