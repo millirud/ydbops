@@ -156,16 +156,24 @@ func (c *defaultCMSClient) MaintenanceTasks(userSID string) ([]MaintenanceTask, 
 
 func (c *defaultCMSClient) GetMaintenanceTask(taskID string) (MaintenanceTask, error) {
 	result := Ydb_Maintenance.GetMaintenanceTaskResult{}
-	c.logger.Debug("Invoke GetMaintenanceTask method")
+	var lastResponse *Ydb_Maintenance.GetMaintenanceTaskResponse
+	c.logger.Debugf("Invoke GetMaintenanceTask method for task %s", taskID)
 	_, err := c.executeMaintenanceOperation(&result,
 		func(ctx context.Context, cl Ydb_Maintenance_V1.MaintenanceServiceClient) (client.OperationResponse, error) {
-			return cl.GetMaintenanceTask(ctx, &Ydb_Maintenance.GetMaintenanceTaskRequest{
+			response, err := cl.GetMaintenanceTask(ctx, &Ydb_Maintenance.GetMaintenanceTaskRequest{
 				TaskUid: taskID,
 			})
+			if response != nil {
+				lastResponse = response
+			}
+			return response, err
 		},
 	)
 	if err != nil {
-		return nil, err
+		if lastResponse != nil {
+			return nil, fmt.Errorf("GetMaintenanceTask for task %s failed: %w; last received response: %s", taskID, err, lastResponse)
+		}
+		return nil, fmt.Errorf("GetMaintenanceTask for task %s failed: %w; no response received", taskID, err)
 	}
 
 	return &maintenanceTaskResult{
