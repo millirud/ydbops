@@ -21,6 +21,7 @@ type drainCMS struct {
 	params    *cms.MaintenanceTaskParams
 	status    Ydb_Maintenance.ActionState_ActionStatus
 	createErr error
+	created   func(context.Context, cms.MaintenanceTaskParams)
 	getErr    error
 	getTask   func(context.Context, string) (cms.MaintenanceTask, error)
 	dropTask  func(context.Context, string) error
@@ -34,6 +35,9 @@ func (c *drainCMS) WithContext(ctx context.Context) cms.Client {
 }
 func (c *drainCMS) CreateMaintenanceTask(p cms.MaintenanceTaskParams) (cms.MaintenanceTask, error) {
 	*c.params = p
+	if c.created != nil {
+		c.created(c.ctx, p)
+	}
 	return &Ydb_Maintenance.MaintenanceTaskResult{ActionGroupStates: []*Ydb_Maintenance.ActionGroupStates{{ActionStates: []*Ydb_Maintenance.ActionState{{Status: c.status}}}}}, c.createErr
 }
 func (c *drainCMS) GetMaintenanceTask(id string) (cms.MaintenanceTask, error) {
@@ -73,14 +77,15 @@ func TestDrainRestart(t *testing.T) {
 		cancel       bool
 		wantErr      bool
 		wantCalls    int
-		wantWarning  bool
+		wantWarnings int
 	}{
 		{name: "performed", action: "stop", status: Ydb_Maintenance.ActionState_ACTION_STATUS_PERFORMED, wantCalls: 1},
 		{name: "pending stop", action: "stop", status: Ydb_Maintenance.ActionState_ACTION_STATUS_PENDING, wantErr: true},
 		{name: "in progress stop", action: "stop", status: Ydb_Maintenance.ActionState_ACTION_STATUS_IN_PROGRESS, wantErr: true},
-		{name: "timeout force", action: "force", wantCalls: 1, wantWarning: true},
+		{name: "timeout force", action: "force", wantCalls: 1, wantWarnings: 1},
 		{name: "CMS error is not forced", action: "force", createErr: errors.New("CMS unavailable"), wantErr: true},
-		{name: "Get error is not forced", action: "force", getErr: errors.New("CMS unavailable"), wantErr: true},
+		{name: "Get errors reach force timeout", action: "force", getErr: errors.New("CMS unavailable"), wantCalls: 1, wantWarnings: 2},
+		{name: "Get errors reach stop timeout", action: "stop", getErr: errors.New("CMS unavailable"), wantErr: true, wantWarnings: 1},
 		{name: "cancellation is not forced", action: "force", cancel: true, wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -112,8 +117,8 @@ func TestDrainRestart(t *testing.T) {
 			if params.TaskType != cms.DrainTask || len(params.Nodes) != 1 || params.Nodes[0].NodeId != 42 || params.TaskUID == "restart" {
 				t.Fatalf("wrong drain task: %+v", params)
 			}
-			if tc.wantWarning && logs.Len() != 1 {
-				t.Fatalf("warnings = %d", logs.Len())
+			if logs.Len() != tc.wantWarnings {
+				t.Fatalf("warnings = %d, want %d", logs.Len(), tc.wantWarnings)
 			}
 		})
 	}
@@ -169,16 +174,23 @@ func TestDrainFlags(t *testing.T) {
 }
 
 func TestDrainWaitsForGetPerformed(t *testing.T) {
-	statuses := []Ydb_Maintenance.ActionState_ActionStatus{
-		Ydb_Maintenance.ActionState_ACTION_STATUS_PENDING,
-		Ydb_Maintenance.ActionState_ACTION_STATUS_IN_PROGRESS,
-		Ydb_Maintenance.ActionState_ACTION_STATUS_PERFORMED,
+	responses := []struct {
+		status Ydb_Maintenance.ActionState_ActionStatus
+		err    error
+	}{
+		{err: errors.New("GetMaintenanceTask internal retries exhausted")},
+		{status: Ydb_Maintenance.ActionState_ACTION_STATUS_PENDING},
+		{status: Ydb_Maintenance.ActionState_ACTION_STATUS_IN_PROGRESS},
+		{status: Ydb_Maintenance.ActionState_ACTION_STATUS_PERFORMED},
 	}
 	params := &cms.MaintenanceTaskParams{}
 	dropped := false
 	reads := 0
+	creates := 0
+	var originalDeadline time.Time
+	var originalTaskID string
 	rst := &drainRestarter{before: func() {
-		if reads != len(statuses) {
+		if reads != len(responses) {
 			t.Errorf("restart before GetMaintenanceTask returned PERFORMED: %d reads", reads)
 		}
 		if dropped {
@@ -187,24 +199,36 @@ func TestDrainWaitsForGetPerformed(t *testing.T) {
 	}}
 	cl := &drainCMS{
 		params: params, dropped: &dropped,
+		created: func(ctx context.Context, p cms.MaintenanceTaskParams) {
+			creates++
+			if creates != 1 {
+				t.Fatal("drain task recreated after a Get failure")
+			}
+			var ok bool
+			originalDeadline, ok = ctx.Deadline()
+			if !ok {
+				t.Fatal("drain creation has no deadline")
+			}
+			originalTaskID = p.TaskUID
+		},
 		// Even a PERFORMED create response must be verified with GetMaintenanceTask.
 		status: Ydb_Maintenance.ActionState_ACTION_STATUS_PERFORMED,
 		getTask: func(ctx context.Context, id string) (cms.MaintenanceTask, error) {
-			if id != params.TaskUID {
+			if id != originalTaskID {
 				t.Fatalf("queried task %q instead of %q", id, params.TaskUID)
 			}
-			if rst.calls != 0 {
-				t.Fatal("node restarted before drain completed")
+			if rst.calls != 0 || dropped {
+				t.Fatal("restart or cleanup happened before drain completed")
 			}
-			if _, ok := ctx.Deadline(); !ok {
-				t.Fatal("GetMaintenanceTask has no drain deadline")
+			if deadline, ok := ctx.Deadline(); !ok || !deadline.Equal(originalDeadline) {
+				t.Fatal("GetMaintenanceTask reset the original drain deadline")
 			}
-			if reads >= len(statuses) {
+			if reads >= len(responses) {
 				t.Fatal("polling continued after PERFORMED")
 			}
-			actionStatus := statuses[reads]
+			response := responses[reads]
 			reads++
-			return &Ydb_Maintenance.MaintenanceTaskResult{ActionGroupStates: []*Ydb_Maintenance.ActionGroupStates{{ActionStates: []*Ydb_Maintenance.ActionState{{Status: actionStatus}}}}}, nil
+			return &Ydb_Maintenance.MaintenanceTaskResult{ActionGroupStates: []*Ydb_Maintenance.ActionGroupStates{{ActionStates: []*Ydb_Maintenance.ActionState{{Status: response.status}}}}}, response.err
 		},
 	}
 	r := &Rolling{
@@ -214,33 +238,58 @@ func TestDrainWaitsForGetPerformed(t *testing.T) {
 	if err := r.restartNode(context.Background(), &Ydb_Maintenance.Node{NodeId: 42}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if reads != len(statuses) || rst.calls != 1 || !dropped {
+	if creates != 1 || reads != len(responses) || rst.calls != 1 || !dropped {
 		t.Fatalf("reads=%d restarts=%d dropped=%v", reads, rst.calls, dropped)
 	}
 }
 
 func TestDrainGetDeadline(t *testing.T) {
-	for _, action := range []string{DrainWaitTimeoutActionStop, DrainWaitTimeoutActionForce} {
-		t.Run(action, func(t *testing.T) {
+	for _, tc := range []struct {
+		name, action                 string
+		permanentError, parentCancel bool
+	}{
+		{name: "hanging Get stop", action: DrainWaitTimeoutActionStop},
+		{name: "hanging Get force", action: DrainWaitTimeoutActionForce},
+		{name: "Get errors stop", action: DrainWaitTimeoutActionStop, permanentError: true},
+		{name: "Get errors force", action: DrainWaitTimeoutActionForce, permanentError: true},
+		{name: "cancel while retrying Get", action: DrainWaitTimeoutActionForce, permanentError: true, parentCancel: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancelCause(context.Background())
+			defer cancel(nil)
 			dropped := false
 			queried := false
 			cl := &drainCMS{
 				params: &cms.MaintenanceTaskParams{}, dropped: &dropped,
 				getTask: func(ctx context.Context, _ string) (cms.MaintenanceTask, error) {
 					queried = true
+					if tc.parentCancel {
+						timer := time.AfterFunc(10*time.Millisecond, func() { cancel(context.Canceled) })
+						t.Cleanup(func() { timer.Stop() })
+					}
+					if tc.permanentError {
+						return nil, errors.New("GetMaintenanceTask retries exhausted")
+					}
 					<-ctx.Done()
 					return nil, ctx.Err()
 				},
 			}
 			rst := &drainRestarter{}
+			timeout := 20 * time.Millisecond
+			if tc.parentCancel {
+				timeout = 5 * time.Second
+			}
 			r := &Rolling{
 				cms: cl, restarter: rst, logger: zap.NewNop().Sugar(), state: &state{restartTaskUID: "restart"},
-				opts: &RestartOptions{WithDrain: true, DrainWaitTimeout: 20 * time.Millisecond, DrainWaitTimeoutAction: action},
+				opts: &RestartOptions{WithDrain: true, DrainWaitTimeout: timeout, DrainWaitTimeoutAction: tc.action},
 			}
-			ctx, cancel := context.WithCancelCause(context.Background())
-			defer cancel(nil)
+			started := time.Now()
 			err := r.restartNode(ctx, &Ydb_Maintenance.Node{NodeId: 42}, cancel)
-			if action == DrainWaitTimeoutActionStop {
+			if tc.parentCancel {
+				if !errors.Is(err, context.Canceled) || rst.calls != 0 || time.Since(started) >= time.Second {
+					t.Fatalf("cancellation was not immediate: error=%v restarts=%d elapsed=%s", err, rst.calls, time.Since(started))
+				}
+			} else if tc.action == DrainWaitTimeoutActionStop {
 				if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(context.Cause(ctx), context.DeadlineExceeded) || rst.calls != 0 {
 					t.Fatalf("error=%v restarts=%d", err, rst.calls)
 				}

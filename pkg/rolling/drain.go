@@ -74,14 +74,12 @@ func (r *Rolling) drainNode(ctx context.Context, node *Ydb_Maintenance.Node, tas
 		// Observe completion through GetMaintenanceTask, including the first
 		// check after creation. RefreshMaintenanceTask is not a status read.
 		task, getErr := cl.GetMaintenanceTask(taskID)
-		if getErr != nil {
-			err = getErr
-			break
-		}
 		if err = waitCtx.Err(); err != nil {
 			break
 		}
-		if drainPerformed(task) {
+		if getErr != nil {
+			r.logger.Warnf("GetMaintenanceTask for drain task %s on node %d failed; retrying in %s until drain timeout: %v", taskID, node.NodeId, interval, getErr)
+		} else if drainPerformed(task) {
 			r.logger.Debugf("Confirmed drain task %s for node %d: ACTION_STATUS_PERFORMED via GetMaintenanceTask", taskID, node.NodeId)
 			return nil
 		}
